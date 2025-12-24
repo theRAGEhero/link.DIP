@@ -16,7 +16,8 @@ app.use(express.json({ limit: "1mb" }));
 app.use("/previews", express.static(path.join(__dirname, "..", "data", "previews")));
 
 const clientDist = path.join(__dirname, "..", "client", "dist");
-if (fs.existsSync(clientDist)) {
+const hasClientDist = fs.existsSync(clientDist);
+if (hasClientDist) {
   app.use(express.static(clientDist));
 }
 
@@ -90,12 +91,6 @@ app.get("/api/links", (req, res) => {
   res.json({ links });
 });
 
-if (fs.existsSync(clientDist)) {
-  app.get("*", (req, res) => {
-    res.sendFile(path.join(clientDist, "index.html"));
-  });
-}
-
 app.post("/api/submit", async (req, res) => {
   const { url } = req.body;
   if (!url || typeof url !== "string") {
@@ -109,6 +104,18 @@ app.post("/api/submit", async (req, res) => {
     res.status(500).json({ error: "Failed to evaluate link" });
   }
 });
+
+if (hasClientDist) {
+  app.use((req, res, next) => {
+    if (req.method !== "GET") {
+      return next();
+    }
+    if (req.path.startsWith("/api") || req.path.startsWith("/previews")) {
+      return next();
+    }
+    res.sendFile(path.join(clientDist, "index.html"));
+  });
+}
 
 function startTelegramBot() {
   if (!TELEGRAM_BOT_TOKEN) {

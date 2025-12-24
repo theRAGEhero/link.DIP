@@ -3,7 +3,7 @@ services:
   linkdip:
     build: .
     ports:
-      - "3100:3100"
+      - "3180:3100"
     env_file:
       - .env
     volumes:
