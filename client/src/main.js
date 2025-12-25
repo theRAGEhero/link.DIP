@@ -50,6 +50,7 @@ app.innerHTML = `
     </section>
 
     <footer class="footer">
+      Open source platform on <a href="https://github.com/theRAGEhero/link.DIP" target="_blank" rel="noreferrer">GitHub</a>.
       Part of the <a href="https://democracyinnovators.com" target="_blank" rel="noreferrer">Democracy Innovators Podcast</a>.
       Made by <a href="https://alexoppo.com" target="_blank" rel="noreferrer">Alexoppo.com</a> with &#10084;.
     </footer>
