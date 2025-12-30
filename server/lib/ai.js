@@ -1,6 +1,8 @@
+const fs = require("fs");
+const path = require("path");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-const categories = [
+const defaultCategories = [
   "Digital Democracy",
   "Participation",
   "Elections & Integrity",
@@ -39,9 +41,54 @@ function getClient() {
 }
 
 function buildPrompt(url, title, source) {
-  return `You are a strict curator for a platform about digital democracy, civic tech, gov tech, innovation in governance, public sector technology, and the future of politics.\n\nEvaluate the link and respond ONLY with JSON.\n\nRules:\n- If it is unrelated to the domain above, set coherent=false and category="Rejected".\n- If coherent=true, choose exactly one category from this list: ${categories
-    .filter((c) => c !== "Rejected")
-    .join(", ")}.\n- Always provide a concise reason.\n- Provide a category_reason explaining why that category fits more than others.\n- Provide a short title if possible.\n\nInput:\nURL: ${url}\nTitle: ${title || "(unknown)"}\nSource: ${source}\n\nReturn JSON with keys: coherent (boolean), category (string), reason (string), category_reason (string), title (string).`;
+  const template = loadPromptTemplate();
+  const { categories } = loadCategoriesFromTemplate(template);
+  const categoryList = categories.filter((c) => c !== "Rejected").join(", ");
+  return template
+    .replace(/{{categories}}/g, categoryList)
+    .replace(/{{url}}/g, url)
+    .replace(/{{title}}/g, title || "(unknown)")
+    .replace(/{{source}}/g, source);
+}
+
+function loadPromptTemplate() {
+  const customPromptPath = path.join(__dirname, "..", "..", "data", "custom-agent.md");
+  const promptPath = path.join(__dirname, "..", "..", "agent.md");
+  try {
+    const raw = fs.readFileSync(customPromptPath, "utf-8");
+    if (raw.trim()) {
+      return raw.trim();
+    }
+  } catch (error) {
+    // fall back to default
+  }
+  try {
+    const raw = fs.readFileSync(promptPath, "utf-8");
+    if (raw.trim()) {
+      return raw.trim();
+    }
+  } catch (error) {
+    // fall back to default
+  }
+  return [
+    "You are a strict curator for a platform about digital democracy, civic tech, gov tech, innovation in governance, public sector technology, and the future of politics.",
+    "",
+    "Evaluate the link and respond ONLY with JSON.",
+    "",
+    "Rules:",
+    "- If it is unrelated to the domain above, set coherent=false and category=\"Rejected\".",
+    "- If coherent=true, choose exactly one category from this list: {{categories}}.",
+    "- Always provide a concise reason.",
+    "- Provide a category_reason explaining why that category fits more than others.",
+    "- Provide a short title if possible.",
+    "",
+    "Input:",
+    "URL: {{url}}",
+    "Title: {{title}}",
+    "Source: {{source}}",
+    "",
+    "Return JSON with keys: coherent (boolean), category (string), reason (string), category_reason (string), title (string).",
+  ].join("\n");
 }
 
 async function evaluateLink({ url, title, source }) {
@@ -55,6 +102,7 @@ async function evaluateLink({ url, title, source }) {
   const result = await generateWithRetry(model, prompt);
   const text = result.response.text();
   const jsonText = extractJson(text);
+  const { categories } = loadCategoriesFromTemplate(loadPromptTemplate());
 
   let parsed;
   try {
@@ -111,4 +159,32 @@ function extractJson(text) {
   return candidate;
 }
 
-module.exports = { evaluateLink, categories };
+function loadCategoriesFromTemplate(template) {
+  const categories = [];
+  const lines = template.split("\n");
+  let inSection = false;
+  for (const line of lines) {
+    if (line.trim().toLowerCase() === "categories:") {
+      inSection = true;
+      continue;
+    }
+    if (inSection) {
+      if (!line.trim() || !line.trim().startsWith("-")) {
+        break;
+      }
+      const value = line.replace(/^-+/, "").trim();
+      if (value) {
+        categories.push(value);
+      }
+    }
+  }
+  if (!categories.length) {
+    return { categories: defaultCategories };
+  }
+  if (!categories.includes("Rejected")) {
+    categories.push("Rejected");
+  }
+  return { categories };
+}
+
+module.exports = { evaluateLink, defaultCategories };
