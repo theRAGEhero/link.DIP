@@ -37,6 +37,8 @@ Open `http://localhost:5173` for the UI.
 - `TELEGRAM_ALLOWED_CHAT_IDS` (optional, comma-separated)
 - `RSS_MAX_ITEMS` (default: 20)
 - `RSS_POLL_INTERVAL_MINUTES` (default: 60)
+- `AI_QUEUE_INTERVAL_MINUTES` (default: 10)
+- `AI_MAX_RETRIES` (default: 3)
 
 ## Docker (Recommended for Production)
 
@@ -64,6 +66,8 @@ App runs on `http://localhost:3100`.
 - Submitting an RSS feed URL in the web form will import and evaluate all items in that feed.
 - RSS feeds submitted once are stored and re-polled on the schedule.
 - Edit `data/custom-agent.md` to customize the AI prompt without changing code (falls back to `agent.md`). Categories are read from the `Categories:` section.
+- If AI rate limits occur, links are queued and retried later (hidden until evaluated).
+- Audit CSV includes status, attempts, and last error for debugging.
 
 ## Credits
 

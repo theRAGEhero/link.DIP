@@ -134,7 +134,7 @@ async function generateWithRetry(model, prompt) {
     } catch (error) {
       lastError = error;
       const message = String(error && error.message ? error.message : error);
-      const shouldRetry = message.includes("503") || message.toLowerCase().includes("overloaded") || message.includes("429");
+      const shouldRetry = isTransientAiError(message);
       if (!shouldRetry || i === attempts - 1) {
         throw error;
       }
@@ -187,4 +187,13 @@ function loadCategoriesFromTemplate(template) {
   return { categories };
 }
 
-module.exports = { evaluateLink, defaultCategories };
+function isTransientAiError(error) {
+  const message = String(error || "");
+  return (
+    message.includes("503") ||
+    message.includes("429") ||
+    message.toLowerCase().includes("overloaded")
+  );
+}
+
+module.exports = { evaluateLink, defaultCategories, isTransientAiError };

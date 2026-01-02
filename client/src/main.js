@@ -259,8 +259,13 @@ form.addEventListener("submit", async (event) => {
 
     const data = await res.json();
     if (data.mode === "rss") {
-      statusEl.textContent = `RSS import: ${data.total} links processed. Accepted: ${data.accepted}. Rejected: ${data.rejected}. Duplicates: ${data.duplicates}.`;
+      const queuedText = data.queued ? ` Queued: ${data.queued}.` : "";
+      statusEl.textContent = `RSS import: ${data.total} links processed. Accepted: ${data.accepted}. Rejected: ${data.rejected}. Duplicates: ${data.duplicates}.${queuedText}`;
       fetchLinks();
+      return;
+    }
+    if (data.queued) {
+      statusEl.textContent = "Queued for later evaluation due to rate limits.";
       return;
     }
     if (data.isDuplicate) {

@@ -8,7 +8,7 @@ function ensureCsv() {
   if (!fs.existsSync(csvPath)) {
     fs.writeFileSync(
       csvPath,
-      "timestamp,source,url,title,image,coherent,category,reason,category_reason,raw_ai\n",
+      "timestamp,source,url,title,image,coherent,category,reason,category_reason,raw_ai,status,attempts,last_error,queued_at\n",
       "utf-8"
     );
   }
@@ -29,6 +29,10 @@ async function appendAudit(entry) {
       { id: "reason", title: "reason" },
       { id: "category_reason", title: "category_reason" },
       { id: "raw_ai", title: "raw_ai" },
+      { id: "status", title: "status" },
+      { id: "attempts", title: "attempts" },
+      { id: "last_error", title: "last_error" },
+      { id: "queued_at", title: "queued_at" },
     ],
     append: true,
   });

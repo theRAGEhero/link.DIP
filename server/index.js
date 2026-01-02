@@ -6,12 +6,13 @@ const fs = require("fs");
 const TelegramBot = require("node-telegram-bot-api");
 const logger = require("./lib/logger");
 const { fetchPreview } = require("./lib/preview");
-const { evaluateLink } = require("./lib/ai");
+const { evaluateLink, isTransientAiError } = require("./lib/ai");
 const { addLink, readLinks, normalizeUrl } = require("./lib/storage");
 const { appendAudit } = require("./lib/audit");
 const { getChatSettings, setChatReplies, setChatReplyThread, setChatShowSource } = require("./lib/settings");
 const { parseRss } = require("./lib/rss");
 const { readFeeds, upsertFeed } = require("./lib/rssStore");
+const { enqueue, readQueue, updateQueueItem, removeQueueItem } = require("./lib/queue");
 
 const app = express();
 app.use(cors());
@@ -38,7 +39,7 @@ function isAllowedChat(chatId) {
   return TELEGRAM_ALLOWED_CHAT_IDS.includes(String(chatId));
 }
 
-async function processLink({ url, source, sourceMeta }) {
+async function processLink({ url, source, sourceMeta, allowQueue = true }) {
   const existing = readLinks().find(
     (item) => normalizeUrl(item.url) === normalizeUrl(url)
   );
@@ -46,13 +47,50 @@ async function processLink({ url, source, sourceMeta }) {
     logger.info("Duplicate link skipped", { url, source });
     return { entry: existing, isDuplicate: true };
   }
-  const preview = await fetchPreview(url);
-  const evaluation = await evaluateLink({
-    url,
-    title: preview.title,
-    source,
-    source_meta: sourceMeta || null,
-  });
+  let preview;
+  try {
+    preview = await fetchPreview(url);
+  } catch (error) {
+    preview = { image: "", title: "" };
+  }
+  let evaluation;
+  try {
+    evaluation = await evaluateLink({
+      url,
+      title: preview.title,
+      source,
+    });
+  } catch (error) {
+    const message = String(error && error.message ? error.message : error);
+    if (allowQueue && isTransientAiError(message)) {
+      const queuedAt = new Date().toISOString();
+      enqueue({
+        url,
+        source,
+        source_meta: sourceMeta || null,
+        last_error: message,
+      });
+      logger.warn("Queued link for later evaluation", { url, source, error: message });
+      await appendAudit({
+        timestamp: queuedAt,
+        source,
+        url,
+        title: preview.title || url,
+        image: preview.image || "",
+        coherent: "",
+        category: "",
+        reason: "",
+        category_reason: "",
+        raw_ai: "",
+        status: "queued",
+        attempts: 0,
+        last_error: message,
+        queued_at: queuedAt,
+      });
+      return { queued: true, isDuplicate: false, entry: null };
+    }
+    throw error;
+  }
 
   const entry = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -65,6 +103,7 @@ async function processLink({ url, source, sourceMeta }) {
     reason: evaluation.reason,
     category_reason: evaluation.category_reason,
     source,
+    source_meta: sourceMeta || null,
   };
 
   addLink(entry);
@@ -80,6 +119,10 @@ async function processLink({ url, source, sourceMeta }) {
     reason: entry.reason,
     category_reason: entry.category_reason,
     raw_ai: evaluation.raw,
+    status: "success",
+    attempts: "",
+    last_error: "",
+    queued_at: "",
   });
 
   logger.info("Processed link", { url, source, coherent: entry.coherent });
@@ -126,15 +169,17 @@ app.post("/api/submit", async (req, res) => {
         });
         results.push(result);
       }
-      const acceptedCount = results.filter((r) => r.entry.coherent).length;
-      const rejectedCount = results.length - acceptedCount;
+      const acceptedCount = results.filter((r) => r.entry && r.entry.coherent).length;
+      const rejectedCount = results.filter((r) => r.entry && !r.entry.coherent).length;
       const duplicateCount = results.filter((r) => r.isDuplicate).length;
+      const queuedCount = results.filter((r) => r.queued).length;
       return res.json({
         mode: "rss",
         total: results.length,
         accepted: acceptedCount,
         rejected: rejectedCount,
         duplicates: duplicateCount,
+        queued: queuedCount,
         feedTitle: rss.title,
       });
     }
@@ -142,7 +187,7 @@ app.post("/api/submit", async (req, res) => {
     const result = await processLink({ url, source: "user" });
     res.json(result);
   } catch (error) {
-    logger.error("Failed to process user link", { error: error.message });
+    logger.error("Failed to process user link", { url, error: error.message });
     res.status(500).json({ error: "Failed to evaluate link" });
   }
 });
@@ -217,9 +262,10 @@ function startTelegramBot() {
         return;
       }
 
-      const acceptedCount = results.filter((r) => r.entry.coherent).length;
-      const rejectedCount = results.length - acceptedCount;
+      const acceptedCount = results.filter((r) => r.entry && r.entry.coherent).length;
+      const rejectedCount = results.filter((r) => r.entry && !r.entry.coherent).length;
       const duplicateCount = results.filter((r) => r.isDuplicate).length;
+      const queuedCount = results.filter((r) => r.queued).length;
 
       const replyLines = [
         `Processed ${results.length} link${results.length === 1 ? "" : "s"}.`,
@@ -229,10 +275,17 @@ function startTelegramBot() {
       if (duplicateCount) {
         replyLines.push(`Duplicates skipped: ${duplicateCount}`);
       }
+      if (queuedCount) {
+        replyLines.push(`Queued for later: ${queuedCount}`);
+      }
 
       bot.sendMessage(msg.chat.id, replyLines.join("\n"), replyOptions);
     } catch (error) {
-      logger.error("Failed to process telegram link", { error: error.message });
+      logger.error("Failed to process telegram link", {
+        error: error.message,
+        chat_id: msg.chat.id,
+        urls,
+      });
       bot.sendMessage(msg.chat.id, "Failed to evaluate the link.", replyOptions);
     }
   });
@@ -247,6 +300,7 @@ app.listen(PORT, () => {
 });
 
 startRssScheduler();
+startQueueScheduler();
 
 function isBotRepliesCommand(text) {
   return /^\/botreplies(@\w+)?\b/i.test(text.trim());
@@ -473,6 +527,20 @@ function startRssScheduler() {
   logger.info(`RSS polling scheduled every ${intervalMinutes} minutes.`);
 }
 
+function startQueueScheduler() {
+  const intervalMinutes = Number(process.env.AI_QUEUE_INTERVAL_MINUTES || 10);
+  if (!intervalMinutes || intervalMinutes <= 0) {
+    return;
+  }
+  const intervalMs = intervalMinutes * 60 * 1000;
+  setInterval(() => {
+    processQueue().catch((error) => {
+      logger.error("AI queue processing failed", { error: error.message });
+    });
+  }, intervalMs);
+  logger.info(`AI queue scheduled every ${intervalMinutes} minutes.`);
+}
+
 async function pollRssFeeds() {
   const feeds = readFeeds();
   if (!feeds.length) {
@@ -495,6 +563,65 @@ async function pollRssFeeds() {
       });
     }
     logger.info("RSS feed polled", { url: feed.url, items: rss.items.length });
+  }
+}
+
+async function processQueue() {
+  const maxRetries = Number(process.env.AI_MAX_RETRIES || 3);
+  const queue = readQueue();
+  if (!queue.length) {
+    return;
+  }
+  for (const item of queue) {
+    if (item.attempts >= maxRetries) {
+      logger.warn("Dropping queued link after max retries", { url: item.url });
+      removeQueueItem(item.id);
+      continue;
+    }
+
+    updateQueueItem(item.id, {
+      attempts: item.attempts + 1,
+      last_attempt_at: new Date().toISOString(),
+    });
+
+    try {
+      await processLink({
+        url: item.url,
+        source: item.source,
+        sourceMeta: item.source_meta || null,
+        allowQueue: false,
+      });
+      removeQueueItem(item.id);
+      logger.info("Processed queued link", { url: item.url });
+    } catch (error) {
+      const message = String(error && error.message ? error.message : error);
+      if (!isTransientAiError(message)) {
+        logger.error("Dropping queued link due to non-retryable error", {
+          url: item.url,
+          error: message,
+        });
+        await appendAudit({
+          timestamp: new Date().toISOString(),
+          source: item.source,
+          url: item.url,
+          title: item.url,
+          image: "",
+          coherent: "",
+          category: "",
+          reason: "",
+          category_reason: "",
+          raw_ai: "",
+          status: "failed",
+          attempts: item.attempts + 1,
+          last_error: message,
+          queued_at: item.created_at || "",
+        });
+        removeQueueItem(item.id);
+        continue;
+      }
+      updateQueueItem(item.id, { last_error: message });
+      logger.warn("Queued link retry failed", { url: item.url, error: message });
+    }
   }
 }
 
